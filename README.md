@@ -1,5 +1,7 @@
 # vanity
 
+![vanity usage demo](usage.gif)
+
 `vanity` is an interactive, GPU-accelerated CREATE2 vanity-address miner for
 Foundry projects. It builds the project, lets you choose a deployable contract
 artifact, and searches for a `bytes32` salt that gives the requested address
