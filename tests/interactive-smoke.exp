@@ -1,0 +1,122 @@
+#!/usr/bin/expect -f
+
+set timeout 120
+match_max 1000000
+
+proc fail {message code} {
+    puts stderr "\ninteractive smoke test failed: $message"
+    catch {send -- "\003"}
+    catch {close}
+    catch {wait}
+    exit $code
+}
+
+proc expect_re {pattern description} {
+    expect {
+        -re $pattern {
+            return
+        }
+        timeout {
+            fail "timed out waiting for $description" 124
+        }
+        eof {
+            fail "vanity exited before showing $description" 125
+        }
+    }
+}
+
+set script_dir [file dirname [file normalize [info script]]]
+set repository [file normalize [file join $script_dir ..]]
+set fixture [file join $script_dir fixtures foundry-smoke]
+set artifact_root [file join $repository target foundry-smoke-out]
+set cache_root [file join $repository target foundry-smoke-cache]
+
+if {$argc == 0} {
+    set binary [file join $repository target debug vanity]
+} elseif {$argc == 1} {
+    set binary [file normalize [lindex $argv 0]]
+} else {
+    puts stderr "usage: tests/interactive-smoke.exp ?path-to-vanity?"
+    exit 2
+}
+
+if {![file executable $binary]} {
+    puts stderr "vanity binary is not executable: $binary"
+    puts stderr "build it first with: cargo build --bin vanity"
+    exit 2
+}
+
+set env(NO_COLOR) 1
+set env(TERM) xterm-256color
+set env(RAYON_NUM_THREADS) 1
+
+# Prove that vanity's own `forge build` creates the selected artifact.
+file delete -force -- $artifact_root
+file delete -force -- $cache_root
+
+cd $fixture
+spawn -noecho $binary
+
+expect_re {vanity . CREATE2 address miner for Foundry} "the startup banner"
+expect_re {Running forge build} "the forge build status"
+expect_re {Found 1 deployable contract artifact\(s\)} "the artifact count"
+expect_re {foundry-smoke-out} "the configured Foundry output directory"
+
+expect_re {Select a contract to deploy} "the contract selector"
+expect_re {src/Smoke\.sol:Smoke} "the Smoke contract artifact"
+send -- "\r"
+
+expect_re {CREATE2 deployer address} "the CREATE2 deployer prompt"
+send -- "0x0000000000000000000000000000000000000000\r"
+
+expect_re {This contract requires constructor\(uint256\)} "the constructor signature"
+expect_re {Paste ABI-encoded constructor arguments} "the constructor arguments field"
+send -- "0x000000000000000000000000000000000000000000000000000000000000002a\r"
+
+expect_re {Choose an address prefix} "the prefix selector"
+expect_re {dead . example} "a prefix example"
+expect_re {Custom} "the custom prefix choice"
+send -- "k\r"
+
+expect_re {Enter a custom prefix} "the custom prefix field"
+send -- "a\r"
+
+expect_re {Choose an address suffix} "the suffix selector"
+expect_re {beef . example} "a suffix example"
+expect_re {Custom} "the custom suffix choice"
+send -- "k\r"
+
+expect_re {Enter a custom suffix} "the custom suffix field"
+send -- "b\r"
+
+expect_re {Search configuration} "the search summary"
+expect_re {Contract: src/Smoke\.sol:Smoke} "the selected contract summary"
+expect_re {CREATE2 deployer: 0x0000000000000000000000000000000000000000} "the deployer summary"
+expect_re {Prefix: 0xa} "the custom prefix summary"
+expect_re {Suffix: 0xb} "the custom suffix summary"
+expect_re {Init code hash: 0x[0-9a-fA-F]{64}} "the init code hash"
+expect_re {Found a matching CREATE2 deployment} "the successful search result"
+expect_re {Address: 0x[aA][0-9a-fA-F]{38}[bB]} "a matching vanity address"
+expect_re {Salt: +0x[0-9a-fA-F]{64}} "a bytes32 salt"
+
+expect {
+    eof {}
+    timeout {
+        fail "vanity did not exit after printing its result" 126
+    }
+}
+
+set wait_result [wait]
+set exit_code [lindex $wait_result 3]
+if {$exit_code != 0} {
+    puts stderr "interactive smoke test failed: vanity exited with status $exit_code"
+    exit $exit_code
+}
+
+set artifact [file join $artifact_root Smoke.sol Smoke.json]
+if {![file isfile $artifact]} {
+    puts stderr "interactive smoke test failed: forge artifact was not created at $artifact"
+    exit 127
+}
+
+puts "interactive smoke test passed"

@@ -1,0 +1,6 @@
+[profile.default]
+src = "src"
+out = "../../../target/foundry-smoke-out"
+cache_path = "../../../target/foundry-smoke-cache"
+solc = "0.8.20"
+
