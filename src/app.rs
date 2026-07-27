@@ -25,7 +25,7 @@ pub fn run() -> Result<()> {
 
     let selected = prompts::select_contract(project.contracts())?;
     let contract = &project.contracts()[selected];
-    let deployer = prompts::prompt_deployer()?;
+    let deployer = project.create2_deployer();
     let required_libraries = contract.required_libraries()?;
     let libraries = prompts::prompt_libraries(&required_libraries)?;
     let constructor_arguments = prompts::prompt_constructor_arguments(contract)?;
@@ -139,11 +139,12 @@ Usage:
   vanity
 
 Run it anywhere inside a Foundry project. The tool runs `forge build`, lets you
-select a deployable artifact, asks for the CREATE2 factory/deployer and desired
-address prefix/suffix, then prints a matching address and bytes32 salt.
+select a deployable artifact, reads Foundry's configured CREATE2 deployer, asks
+for the desired address prefix/suffix, then prints a matching address and
+bytes32 salt.
 
-The deployer must be the address of the contract that executes CREATE2. It is
-not necessarily the EOA that broadcasts the deployment transaction."
+The deployer comes from `forge config --json` and is the proxy Foundry uses for
+salted script deployments."
     );
 }
 

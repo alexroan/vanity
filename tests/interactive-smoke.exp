@@ -66,10 +66,18 @@ expect_re {Select a contract to deploy} "the contract selector"
 expect_re {src/Smoke\.sol:Smoke} "the Smoke contract artifact"
 send -- "\r"
 
-expect_re {CREATE2 deployer address} "the CREATE2 deployer prompt"
-send -- "0x0000000000000000000000000000000000000000\r"
-
-expect_re {This contract requires constructor\(uint256\)} "the constructor signature"
+expect {
+    -re {CREATE2 deployer address} {
+        fail "vanity showed the removed CREATE2 deployer prompt" 128
+    }
+    -re {This contract requires constructor\(uint256\)} {}
+    timeout {
+        fail "timed out waiting for the constructor signature" 124
+    }
+    eof {
+        fail "vanity exited before showing the constructor signature" 125
+    }
+}
 expect_re {Paste ABI-encoded constructor arguments} "the constructor arguments field"
 send -- "0x000000000000000000000000000000000000000000000000000000000000002a\r"
 
@@ -91,13 +99,14 @@ send -- "b\r"
 
 expect_re {Search configuration} "the search summary"
 expect_re {Contract: src/Smoke\.sol:Smoke} "the selected contract summary"
-expect_re {CREATE2 deployer: 0x0000000000000000000000000000000000000000} "the deployer summary"
+expect_re {CREATE2 deployer: 0x1111111111111111111111111111111111111111} "the configured deployer summary"
 expect_re {Prefix: 0xa} "the custom prefix summary"
 expect_re {Suffix: 0xb} "the custom suffix summary"
 expect_re {Init code hash: 0x[0-9a-fA-F]{64}} "the init code hash"
 expect_re {Found a matching CREATE2 deployment} "the successful search result"
 expect_re {Address: 0x[aA][0-9a-fA-F]{38}[bB]} "a matching vanity address"
 expect_re {Salt: +0x[0-9a-fA-F]{64}} "a bytes32 salt"
+expect_re {CREATE2 deployer: 0x1111111111111111111111111111111111111111} "the configured result deployer"
 
 expect {
     eof {}

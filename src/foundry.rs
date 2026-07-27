@@ -12,7 +12,14 @@ use std::process::{Command, Output};
 #[derive(Clone, Debug)]
 pub struct FoundryProject {
     out_dir: PathBuf,
+    create2_deployer: Address,
     contracts: Vec<ContractArtifact>,
+}
+
+#[derive(Debug)]
+struct FoundryConfig {
+    out: PathBuf,
+    create2_deployer: Address,
 }
 
 impl FoundryProject {
@@ -36,13 +43,8 @@ impl FoundryProject {
             .context("could not run `forge config --json`")?;
         ensure_success("forge config --json", &config)?;
 
-        let config: Value =
-            serde_json::from_slice(&config.stdout).context("forge returned invalid JSON config")?;
-        let configured_out = config
-            .get("out")
-            .and_then(Value::as_str)
-            .ok_or_else(|| anyhow!("forge config did not contain a string `out` path"))?;
-        let configured_out = PathBuf::from(configured_out);
+        let config = parse_foundry_config(&config.stdout)?;
+        let configured_out = config.out;
         let out_dir = if configured_out.is_absolute() {
             configured_out
         } else {
@@ -59,16 +61,45 @@ impl FoundryProject {
             );
         }
 
-        Ok(Self { out_dir, contracts })
+        Ok(Self {
+            out_dir,
+            create2_deployer: config.create2_deployer,
+            contracts,
+        })
     }
 
     pub fn out_dir(&self) -> &Path {
         &self.out_dir
     }
 
+    pub const fn create2_deployer(&self) -> Address {
+        self.create2_deployer
+    }
+
     pub fn contracts(&self) -> &[ContractArtifact] {
         &self.contracts
     }
+}
+
+fn parse_foundry_config(output: &[u8]) -> Result<FoundryConfig> {
+    let config: Value =
+        serde_json::from_slice(output).context("forge returned invalid JSON config")?;
+    let out = config
+        .get("out")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("forge config did not contain a string `out` path"))?;
+    let create2_deployer = config
+        .get("create2_deployer")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("forge config did not contain a string `create2_deployer` address"))?
+        .parse::<Address>()
+        .map_err(anyhow::Error::msg)
+        .context("forge config contained an invalid `create2_deployer` address")?;
+
+    Ok(FoundryConfig {
+        out: PathBuf::from(out),
+        create2_deployer,
+    })
 }
 
 #[derive(Clone, Debug)]
@@ -783,6 +814,41 @@ mod tests {
         assert_eq!(
             find_project_root(&nested).unwrap(),
             temp.path().canonicalize().unwrap()
+        );
+    }
+
+    #[test]
+    fn parses_foundry_output_and_create2_deployer() {
+        let config = parse_foundry_config(
+            br#"{
+                "out": "custom-out",
+                "create2_deployer": "0x1111111111111111111111111111111111111111"
+            }"#,
+        )
+        .unwrap();
+
+        assert_eq!(config.out, PathBuf::from("custom-out"));
+        assert_eq!(
+            config.create2_deployer.to_string(),
+            "0x1111111111111111111111111111111111111111"
+        );
+    }
+
+    #[test]
+    fn rejects_missing_or_invalid_create2_deployer_configuration() {
+        let missing = parse_foundry_config(br#"{"out":"out"}"#).unwrap_err();
+        assert!(
+            missing
+                .to_string()
+                .contains("forge config did not contain a string `create2_deployer`")
+        );
+
+        let invalid = parse_foundry_config(br#"{"out":"out","create2_deployer":"not-an-address"}"#)
+            .unwrap_err();
+        assert!(
+            invalid
+                .to_string()
+                .contains("forge config contained an invalid `create2_deployer` address")
         );
     }
 }

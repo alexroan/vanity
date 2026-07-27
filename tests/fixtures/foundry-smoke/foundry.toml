@@ -3,4 +3,4 @@ src = "src"
 out = "../../../target/foundry-smoke-out"
 cache_path = "../../../target/foundry-smoke-cache"
 solc = "0.8.20"
-
+create2_deployer = "0x1111111111111111111111111111111111111111"

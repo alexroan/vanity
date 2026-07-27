@@ -17,18 +17,6 @@ pub fn select_contract(contracts: &[ContractArtifact]) -> Result<usize> {
         .context("contract selection was interrupted")
 }
 
-pub fn prompt_deployer() -> Result<Address> {
-    let value: String = Input::new()
-        .with_prompt("CREATE2 deployer address (the contract/factory executing CREATE2)")
-        .validate_with(|input: &String| input.parse::<Address>().map(|_| ()))
-        .interact_text()
-        .context("deployer address input was interrupted")?;
-    value
-        .parse()
-        .map_err(anyhow::Error::msg)
-        .context("invalid deployer address")
-}
-
 pub fn prompt_libraries(required: &[LibraryId]) -> Result<BTreeMap<LibraryId, Address>> {
     let mut libraries = BTreeMap::new();
     for library in required {

@@ -10,7 +10,6 @@ prefix and suffix.
 - Rust 1.85 or newer
 - [Foundry](https://getfoundry.sh/) with `forge` on `PATH`
 - A Foundry project that builds successfully
-- The address of the contract or factory that will execute `CREATE2`
 
 `cast` is also useful for encoding constructor arguments; the CLI prints the
 exact command when the selected constructor needs them.
@@ -53,7 +52,7 @@ Use a release build for realistic mining performance.
    its default `src` directory.
 2. Reads the configured artifact directory and lists artifacts with non-empty
    creation bytecode as `source/path.sol:ContractName`.
-3. Prompts for the **CREATE2 deployer address**.
+3. Reads Foundry's configured `create2_deployer` and uses it automatically.
 4. Prompts for deployed addresses of any unresolved external libraries.
 5. If needed, shows the constructor signature and asks for its ABI-encoded
    arguments.
@@ -69,7 +68,7 @@ Custom patterns may include `0x`, are case-insensitive, and can be any number
 of hex characters up to the address's 40. At least one prefix or suffix
 character is required. Press Ctrl-C to stop a search.
 
-## The deployer is not usually the EOA
+## Foundry's CREATE2 deployer
 
 CREATE2 derives an address as:
 
@@ -77,16 +76,56 @@ CREATE2 derives an address as:
 last20(keccak256(0xff ++ deployer ++ salt ++ keccak256(init_code)))
 ```
 
-Here, `deployer` is the address of the contract whose code executes the
-`CREATE2` opcode (`address(this)` at that point). It is not the EOA that sends a
-transaction to that contract. If an EOA calls a factory, enter the factory
-address. A proxy, singleton deployer, or nested factory must likewise be
-represented by the address that actually executes `CREATE2`.
+For salted contract creation in a Forge script broadcast, Foundry routes the
+deployment through its configured deterministic deployment proxy. `vanity`
+reads that address from the same resolved configuration returned by
+`forge config --json`; it does not ask the user to enter an address. Foundry's
+default is:
 
-Some factories transform or namespace a user-provided salt before calling
-`CREATE2`. The value printed by `vanity` is the actual 32-byte opcode salt. Do
-not pass it through a factory that hashes or otherwise changes it unless the
-factory API lets the opcode receive that exact value.
+```text
+0x4e59b44847b379578588920ca78fbf26c0b4956c
+```
+
+Projects and environments can override that setting. Inspect the effective
+value with:
+
+```sh
+forge config --json | jq -r '.create2_deployer'
+```
+
+The deployer in the formula is the contract whose code executes the `CREATE2`
+opcode, not the broadcasting EOA. This automatic selection is intended for
+Forge script deployments routed through Foundry's configured proxy, including
+tests that execute the deployment script when that proxy is available.
+
+It is not the right deployer for an ordinary Solidity test that directly runs
+`new Target{salt: salt}()`, or for an application-specific factory that executes
+`CREATE2` itself. Custom factories may also transform or namespace the supplied
+salt. The value printed by `vanity` is the raw 32-byte salt expected by
+Foundry's deterministic deployment proxy. Ordinary tests use the test or
+calling contract as the CREATE2 deployer unless
+`always_use_create_2_factory = true`.
+
+Foundry's two-argument `vm.computeCreate2Address(salt, initCodeHash)` helper
+always computes with the canonical `0x4e59...` proxy. If a project overrides
+`create2_deployer`, tests should use the three-argument overload and pass the
+configured address explicitly.
+
+Mining is offline and does not verify chain state. Before broadcasting to a
+public chain, ensure the configured proxy and expected proxy bytecode exist at
+that address. If the target chain does not support Foundry's default proxy,
+deploy a compatible proxy or configure the correct supported deployer before
+mining. Foundry can install the canonical proxy in a fresh local test
+environment, but a custom deployer or fork must already contain the proxy code.
+For the canonical proxy, check the target RPC with:
+
+```sh
+cast codehash 0x4e59b44847b379578588920ca78fbf26c0b4956c \
+  --rpc-url "$RPC_URL"
+```
+
+The expected runtime code hash is
+`0x2fa86add0aed31f33a762c9d88e807c475bd51d0f52bd0955754b2608f7e4989`.
 
 ## Constructor arguments and libraries
 
@@ -127,10 +166,10 @@ source, compiler, optimizer, metadata, library, or constructor-value change can
 change the init-code hash and therefore the deployment address.
 
 Before broadcasting, recompute or compare `keccak256(init_code)` with the
-`Init code hash` printed by `vanity`. A generic factory should receive those
-exact init-code bytes and the printed salt. With Solidity's
-`new Target{salt: salt}(...)`, ensure the factory executing that expression was
-compiled with bytecode and library links identical to the artifact mined here.
+`Init code hash` printed by `vanity`. Foundry's proxy must receive those exact
+init-code bytes and the printed salt. With Solidity's
+`new Target{salt: salt}(...)` in a Forge script broadcast, confirm the deployment
+is routed through the configured CREATE2 proxy printed by `vanity`.
 
 ## Search difficulty
 
