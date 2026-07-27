@@ -1,7 +1,9 @@
-use rayon::prelude::*;
+use crate::backend::{
+    BackendError, BackendPreference, BackendSession, SearchEvent, search as backend_search,
+};
 use std::fmt;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use tiny_keccak::{Hasher, Keccak};
 
 const ADDRESS_NIBBLES: usize = 40;
@@ -145,6 +147,36 @@ impl VanityPattern {
                 None => true,
             })
     }
+
+    pub(crate) fn packed_mask_value(&self) -> ([u32; 5], [u32; 5]) {
+        let mut mask_bytes = [0_u8; 20];
+        let mut value_bytes = [0_u8; 20];
+        for (index, constraint) in self.constraints.iter().copied().enumerate() {
+            let Some(nibble) = constraint else {
+                continue;
+            };
+            let shift = if index.is_multiple_of(2) { 4 } else { 0 };
+            mask_bytes[index / 2] |= 0x0f << shift;
+            value_bytes[index / 2] |= nibble << shift;
+        }
+
+        let mut mask = [0_u32; 5];
+        let mut value = [0_u32; 5];
+        for index in 0..5 {
+            let start = index * 4;
+            mask[index] = u32::from_le_bytes(
+                mask_bytes[start..start + 4]
+                    .try_into()
+                    .expect("four-byte mask word"),
+            );
+            value[index] = u32::from_le_bytes(
+                value_bytes[start..start + 4]
+                    .try_into()
+                    .expect("four-byte value word"),
+            );
+        }
+        (mask, value)
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -201,74 +233,46 @@ impl Create2Miner {
         &self.init_code_hash
     }
 
+    pub const fn deployer(&self) -> Address {
+        self.deployer
+    }
+
+    pub const fn pattern(&self) -> &VanityPattern {
+        &self.pattern
+    }
+
+    pub fn backend_session(
+        &self,
+        preference: BackendPreference,
+    ) -> Result<BackendSession, BackendError> {
+        BackendSession::new(self, preference)
+    }
+
+    pub fn search_with_backend(
+        &self,
+        session: &mut BackendSession,
+        options: MiningOptions,
+        cancelled: &AtomicBool,
+        on_event: impl FnMut(SearchEvent),
+    ) -> Result<SearchOutcome, BackendError> {
+        backend_search(self, session, options, cancelled, on_event)
+    }
+
     pub fn search(
         &self,
         options: MiningOptions,
         cancelled: &AtomicBool,
         mut on_progress: impl FnMut(SearchProgress),
     ) -> SearchOutcome {
-        let batch_size = options.batch_size.max(1);
-        let mut cursor = options.start_counter;
-        let mut candidates_checked = 0_u128;
-        let mut attempts_remaining = options.max_attempts.map(u128::from);
-
-        loop {
-            if cancelled.load(Ordering::Relaxed) {
-                return SearchOutcome::Cancelled;
+        let mut session = BackendSession::new(self, BackendPreference::Cpu)
+            .expect("the CPU backend is always available");
+        backend_search(self, &mut session, options, cancelled, |event| {
+            if let SearchEvent::Progress(progress) = event {
+                on_progress(progress);
             }
-
-            if attempts_remaining == Some(0) {
-                return SearchOutcome::NotFound { candidates_checked };
-            }
-
-            let available = u128::from(u64::MAX) - u128::from(cursor) + 1;
-            let mut count = available.min(u128::from(batch_size));
-            if let Some(remaining) = attempts_remaining {
-                count = count.min(remaining);
-            }
-            let count = count as u64;
-
-            let candidate = (0..count).into_par_iter().find_map_any(|offset| {
-                if cancelled.load(Ordering::Relaxed) {
-                    return Some(Candidate::Cancelled);
-                }
-
-                let counter = cursor + offset;
-                let salt = salt_from_counter(counter);
-                let address = create2_address_from_hash(self.deployer, salt, self.init_code_hash);
-                self.pattern
-                    .matches(&address)
-                    .then_some(Candidate::Found { address, salt })
-            });
-
-            match candidate {
-                Some(Candidate::Found { address, salt }) => {
-                    return SearchOutcome::Found(SearchResult { address, salt });
-                }
-                Some(Candidate::Cancelled) => {
-                    return SearchOutcome::Cancelled;
-                }
-                None => {}
-            }
-
-            candidates_checked += u128::from(count);
-            on_progress(SearchProgress { candidates_checked });
-
-            if let Some(remaining) = &mut attempts_remaining {
-                *remaining -= u128::from(count);
-            }
-
-            if u128::from(count) == available {
-                return SearchOutcome::NotFound { candidates_checked };
-            }
-            cursor += count;
-        }
+        })
+        .expect("the CPU backend cannot fail")
     }
-}
-
-enum Candidate {
-    Found { address: Address, salt: Salt },
-    Cancelled,
 }
 
 pub fn salt_from_counter(counter: u64) -> Salt {
@@ -286,16 +290,24 @@ pub fn create2_address_from_hash(
     salt: Salt,
     init_code_hash: [u8; 32],
 ) -> Address {
+    let hash = create2_digest_from_hash(deployer, salt, init_code_hash);
+    let mut address = [0_u8; 20];
+    address.copy_from_slice(&hash[12..]);
+    Address::from_bytes(address)
+}
+
+pub(crate) fn create2_digest_from_hash(
+    deployer: Address,
+    salt: Salt,
+    init_code_hash: [u8; 32],
+) -> [u8; 32] {
     let mut preimage = [0_u8; CREATE2_PREIMAGE_LEN];
     preimage[0] = 0xff;
     preimage[1..21].copy_from_slice(deployer.as_bytes());
     preimage[21..53].copy_from_slice(salt.as_bytes());
     preimage[53..].copy_from_slice(&init_code_hash);
 
-    let hash = keccak256(&preimage);
-    let mut address = [0_u8; 20];
-    address.copy_from_slice(&hash[12..]);
-    Address::from_bytes(address)
+    keccak256(&preimage)
 }
 
 pub fn keccak256(bytes: &[u8]) -> [u8; 32] {
@@ -332,7 +344,7 @@ fn parse_nibbles(value: &str, label: &str) -> Result<Vec<u8>, String> {
 
 fn address_nibble(address: &[u8; 20], index: usize) -> u8 {
     let byte = address[index / 2];
-    if index % 2 == 0 {
+    if index.is_multiple_of(2) {
         byte >> 4
     } else {
         byte & 0x0f
@@ -350,7 +362,7 @@ fn format_with_separators(value: u128) -> String {
     let digits = value.to_string();
     let mut output = String::with_capacity(digits.len() + digits.len() / 3);
     for (index, character) in digits.chars().enumerate() {
-        if index > 0 && (digits.len() - index) % 3 == 0 {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
             output.push(',');
         }
         output.push(character);

@@ -1,13 +1,14 @@
 # vanity-create2
 
-`vanity` is an interactive, CPU-parallel CREATE2 vanity-address miner for
+`vanity` is an interactive, GPU-accelerated CREATE2 vanity-address miner for
 Foundry projects. It builds the project, lets you choose a deployable contract
 artifact, and searches for a `bytes32` salt that gives the requested address
-prefix and suffix.
+prefix and suffix. It uses Metal on macOS, Vulkan on Linux, and Direct3D 12 on
+Windows, with automatic Rayon CPU fallback.
 
 ## Prerequisites
 
-- Rust 1.85 or newer
+- Rust 1.87 or newer
 - [Foundry](https://getfoundry.sh/) with `forge` on `PATH`
 - A Foundry project that builds successfully
 
@@ -30,7 +31,8 @@ vanity
 ```
 
 The command is intentionally interactive and takes no positional arguments.
-Use `vanity --help` or `vanity --version` for metadata.
+GPU selection is automatic. Use `vanity --help` or `vanity --version` for
+metadata.
 
 For local development, invoke the checkout without installing it:
 
@@ -38,10 +40,50 @@ For local development, invoke the checkout without installing it:
 cd /path/to/foundry-project
 cargo run --release \
   --manifest-path /path/to/vanity-create2/Cargo.toml \
-  --bin vanity
+  --bin vanity -- --backend auto
 ```
 
 Use a release build for realistic mining performance.
+
+## Backend selection
+
+The optional `--backend` flag accepts:
+
+| Value | Behavior |
+| --- | --- |
+| `auto` | Select the highest-ranked hardware GPU with compute and native shader `u64`; permanently fall back to Rayon CPU if GPU initialization or a search dispatch fails. This is the default. |
+| `gpu` | Require a compatible GPU. Initialization, shader, device, readback, witness, and result-validation failures are returned as errors. |
+| `cpu` | Use Rayon and skip GPU initialization entirely. |
+
+For example:
+
+```sh
+vanity --backend gpu
+vanity --backend cpu
+```
+
+The search summary prints the selected backend, GPU adapter, and graphics API.
+When `auto` falls back, it also prints the reason. GPU results and no-match
+batches are checked against a CPU digest witness before the search advances.
+
+The default build supports the native graphics API for each desktop target:
+
+- macOS: Metal
+- Linux: Vulkan (a working Vulkan loader and driver are required)
+- Windows: Direct3D 12; x86-64 builds statically bundle DXC
+
+Adapters must expose `SHADER_INT64`. Machines without that capability work in
+`auto` mode through the CPU fallback.
+
+To build a smaller CPU-only binary without `wgpu` or graphics-driver
+initialization:
+
+```sh
+cargo build --release --no-default-features --bin vanity
+```
+
+That binary supports `auto` (which selects CPU) and `cpu`; explicit `gpu`
+returns a clear feature-disabled error.
 
 ## Interactive flow
 
@@ -58,15 +100,16 @@ Use a release build for realistic mining performance.
    arguments.
 6. Offers example address prefixes and suffixes (`00`, `dead`, `cafe`, `beef`,
    and `babe`), `None`, or a custom hexadecimal value.
-7. Shows the contract, deployer, pattern, expected attempts, and init-code hash,
-   then searches all CPU cores. Patterns of seven or more constrained hex
-   characters require confirmation.
+7. Shows the contract, deployer, pattern, expected attempts, init-code hash,
+   and selected backend, then searches. Patterns of seven or more constrained
+   hex characters require confirmation.
 8. Prints the matching address, full `bytes32` salt, init-code hash, contract,
    and CREATE2 deployer.
 
 Custom patterns may include `0x`, are case-insensitive, and can be any number
 of hex characters up to the address's 40. At least one prefix or suffix
-character is required. Press Ctrl-C to stop a search.
+character is required. Press Ctrl-C to stop a search. Mining uses one backend
+and one GPU at a time; CPU and GPU mining are not run simultaneously.
 
 ## Foundry's CREATE2 deployer
 
@@ -186,9 +229,9 @@ work by 16:
 
 Prefix and suffix characters both count; compatible overlap counts only once.
 These are averages, not deadlines—a search can finish much sooner or much
-later. Throughput depends on the CPU, build profile, and system load, so start
-with a short pattern and use the live candidates-per-second display to estimate
-a longer search.
+later. Throughput depends on the GPU or CPU, build profile, graphics driver, and
+system load, so start with a short pattern and use the live
+candidates-per-second display to estimate a longer search.
 
 ## Development
 
@@ -198,6 +241,7 @@ Run the complete local verification set with:
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test
+cargo test --no-default-features
 cargo build --release
 cargo run -- --help
 ```
@@ -210,8 +254,38 @@ cargo build --bin vanity
 expect tests/interactive-smoke.exp
 ```
 
-The tests cover EIP-1014 CREATE2 vectors, salt encoding, prefix/suffix matching,
-search cancellation and limits, Foundry artifact discovery, constructor type
-handling, and library linking.
+The smoke test explicitly selects `--backend cpu`, so it is deterministic on
+headless machines. Shader tests parse and validate WGSL with Naga and translate
+it to MSL, SPIR-V, and HLSL.
+
+Optional hardware conformance tests cover EIP-1014-compatible hashing,
+workgroup boundaries, odd-nibble masks, no-match ranges, and CPU validation:
+
+```sh
+VANITY_GPU_TESTS=1 cargo test gpu::tests::optional_hardware_conformance
+```
+
+Use `VANITY_REQUIRE_GPU=1` instead when GPU absence must fail the test:
+
+```sh
+VANITY_REQUIRE_GPU=1 cargo test gpu::tests::optional_hardware_conformance
+```
+
+The release benchmark searches a fixed `2^22` no-match range, reports GPU cold
+initialization separately, and requires at least 2× warm GPU throughput:
+
+```sh
+VANITY_REQUIRE_GPU=1 cargo bench --bench throughput
+```
+
+On the reference M2 Max, the current implementation measured 134.09M
+candidates/s on Metal versus 29.19M with Rayon (4.59×), with 21ms cold GPU
+initialization. Results vary with load and toolchain.
+
+The complete tests also cover EIP-1014 CREATE2 vectors, salt encoding,
+prefix/suffix mask packing, batch partitioning, fallback without skipped
+counters, cancellation and range limits, GPU offset and digest-witness
+validation, Foundry artifact discovery, constructor type handling, and library
+linking.
 
 Licensed under either MIT or Apache-2.0.

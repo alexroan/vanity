@@ -176,7 +176,7 @@ fn parse_hex_bytes(value: &str, allow_empty: bool) -> std::result::Result<Vec<u8
     if !allow_empty && value.is_empty() {
         return Err("encoded constructor arguments cannot be empty".to_owned());
     }
-    if value.len() % 2 != 0 {
+    if !value.len().is_multiple_of(2) {
         return Err("hex input must contain a whole number of bytes".to_owned());
     }
     hex::decode(value).map_err(|_| "input contains non-hex characters".to_owned())

@@ -55,7 +55,7 @@ file delete -force -- $artifact_root
 file delete -force -- $cache_root
 
 cd $fixture
-spawn -noecho $binary
+spawn -noecho $binary --backend cpu
 
 expect_re {vanity . CREATE2 address miner for Foundry} "the startup banner"
 expect_re {Running forge build} "the forge build status"
@@ -103,6 +103,7 @@ expect_re {CREATE2 deployer: 0x1111111111111111111111111111111111111111} "the co
 expect_re {Prefix: 0xa} "the custom prefix summary"
 expect_re {Suffix: 0xb} "the custom suffix summary"
 expect_re {Init code hash: 0x[0-9a-fA-F]{64}} "the init code hash"
+expect_re {Backend: CPU \(Rayon\)} "the deterministic CPU backend"
 expect_re {Found a matching CREATE2 deployment} "the successful search result"
 expect_re {Address: 0x[aA][0-9a-fA-F]{38}[bB]} "a matching vanity address"
 expect_re {Salt: +0x[0-9a-fA-F]{64}} "a bytes32 salt"
