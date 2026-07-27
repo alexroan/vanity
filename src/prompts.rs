@@ -41,23 +41,48 @@ pub fn prompt_constructor_arguments(contract: &ContractArtifact) -> Result<Vec<u
     }
 
     println!("\nThis contract requires {}.", constructor.signature());
+    println!("Constructor arguments:");
+    for (index, input) in constructor.inputs().iter().enumerate() {
+        println!(
+            "  {}. {}: {}",
+            index + 1,
+            input_name(input.name()),
+            input.input_type()
+        );
+    }
     println!(
-        "Encode the values with: cast abi-encode \"{}\" <values...>",
-        constructor.cast_signature()
+        "Enter decimal integers, 0x-prefixed addresses/bytes, true or false, [..] arrays, and (..) tuples."
     );
-    let value: String = Input::new()
-        .with_prompt("Paste ABI-encoded constructor arguments")
-        .validate_with(|input: &String| {
-            let encoded = parse_hex_bytes(input, false)?;
-            constructor
-                .validate_arguments(&encoded)
-                .map_err(|error| error.to_string())
-        })
-        .interact_text()
-        .context("constructor argument input was interrupted")?;
-    let encoded = parse_hex_bytes(&value, false).map_err(anyhow::Error::msg)?;
-    constructor.validate_arguments(&encoded)?;
-    Ok(encoded)
+
+    let total = constructor.inputs().len();
+    let mut values = Vec::with_capacity(total);
+    for (index, input) in constructor.inputs().iter().enumerate() {
+        let value: String = Input::new()
+            .with_prompt(format!(
+                "Constructor argument {}/{} - {}: {}",
+                index + 1,
+                total,
+                input_name(input.name()),
+                input.input_type()
+            ))
+            .allow_empty(true)
+            .validate_with(|value: &String| {
+                constructor
+                    .validate_input(index, value)
+                    .map_err(|error| error.to_string())
+            })
+            .interact_text()
+            .with_context(|| format!("constructor argument {} input was interrupted", index + 1))?;
+        values.push(value);
+    }
+
+    constructor
+        .encode_arguments(&values)
+        .context("could not encode constructor arguments")
+}
+
+fn input_name(name: &str) -> &str {
+    if name.is_empty() { "<unnamed>" } else { name }
 }
 
 pub fn prompt_vanity_pattern() -> Result<VanityPattern> {
@@ -166,31 +191,14 @@ fn normalize_pattern(value: &str) -> String {
         .to_ascii_lowercase()
 }
 
-fn parse_hex_bytes(value: &str, allow_empty: bool) -> std::result::Result<Vec<u8>, String> {
-    let value = value.trim();
-    let value = value
-        .strip_prefix("0x")
-        .or_else(|| value.strip_prefix("0X"))
-        .unwrap_or(value);
-
-    if !allow_empty && value.is_empty() {
-        return Err("encoded constructor arguments cannot be empty".to_owned());
-    }
-    if !value.len().is_multiple_of(2) {
-        return Err("hex input must contain a whole number of bytes".to_owned());
-    }
-    hex::decode(value).map_err(|_| "input contains non-hex characters".to_owned())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn hex_bytes_accept_optional_marker_and_reject_partial_bytes() {
-        assert_eq!(parse_hex_bytes("0x1234", false).unwrap(), [0x12, 0x34]);
-        assert!(parse_hex_bytes("123", false).is_err());
-        assert!(parse_hex_bytes("0x", false).is_err());
+    fn constructor_input_names_show_when_the_abi_does_not_supply_one() {
+        assert_eq!(input_name("owner"), "owner");
+        assert_eq!(input_name(""), "<unnamed>");
     }
 
     #[test]

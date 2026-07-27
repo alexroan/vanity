@@ -12,9 +12,6 @@ Windows, with automatic Rayon CPU fallback.
 - [Foundry](https://getfoundry.sh/) with `forge` on `PATH`
 - A Foundry project that builds successfully
 
-`cast` is also useful for encoding constructor arguments; the CLI prints the
-exact command when the selected constructor needs them.
-
 ## Install and run
 
 From this repository:
@@ -96,8 +93,9 @@ returns a clear feature-disabled error.
    creation bytecode as `source/path.sol:ContractName`.
 3. Reads Foundry's configured `create2_deployer` and uses it automatically.
 4. Prompts for deployed addresses of any unresolved external libraries.
-5. If needed, shows the constructor signature and asks for its ABI-encoded
-   arguments.
+5. If needed, lists the constructor arguments and asks for each typed value
+   individually. Every value is validated against its ABI type before the next
+   prompt appears, then `vanity` performs the ABI encoding.
 6. Offers example address prefixes and suffixes (`00`, `dead`, `cafe`, `beef`,
    and `babe`), `None`, or a custom hexadecimal value.
 7. Shows the contract, deployer, pattern, expected attempts, init-code hash,
@@ -178,16 +176,30 @@ The init code being mined is:
 linked artifact creation bytecode ++ ABI-encoded constructor arguments
 ```
 
-For a constructor such as `constructor(address,uint256)`, the prompt suggests:
+For a constructor such as
+`constructor(address owner,uint256 amount)`, the CLI shows the complete list:
 
-```sh
-cast abi-encode "args(address,uint256)" 0x1111111111111111111111111111111111111111 42
+```text
+Constructor arguments:
+  1. owner: address
+  2. amount: uint256
 ```
 
-Paste the resulting hex bytes into `vanity`. Use `cast abi-encode`, not calldata
-with a four-byte function selector. The bytes are checked against the
-constructor's ABI before mining. Tuple and array types are shown in their
-canonical ABI form by the CLI.
+It then asks for `owner` and `amount` separately. Enter values in these forms:
+
+- integers: decimal, such as `42` or `-7`
+- addresses: 20-byte hex with `0x`, such as
+  `0x1111111111111111111111111111111111111111`
+- booleans: `true` or `false`
+- dynamic and fixed bytes: `0x`-prefixed hex, such as `0x1234`
+- arrays: `[1,2,3]`
+- tuples: `(0x1111111111111111111111111111111111111111,42)`
+- strings: the text itself
+
+Tuple and array types are shown in canonical ABI form. Invalid values, including
+out-of-range narrow integers and incorrectly sized addresses or fixed bytes,
+are rejected at the current prompt. `vanity` ABI-encodes the complete validated
+set internally; do not pre-encode the values with `cast`.
 
 When an artifact contains unresolved link references, `vanity` asks for each
 library as `source/path.sol:LibraryName` and patches that deployed address into
@@ -204,9 +216,9 @@ The returned address is valid only for the exact tuple:
 
 Use the printed salt byte-for-byte. The real deployment must use the same
 contract artifact and compiler/build settings, the same linked library
-addresses, and the same ABI-encoded constructor values. Rebuilding after a
-source, compiler, optimizer, metadata, library, or constructor-value change can
-change the init-code hash and therefore the deployment address.
+addresses, and the same constructor values. Rebuilding after a source,
+compiler, optimizer, metadata, library, or constructor-value change can change
+the init-code hash and therefore the deployment address.
 
 Before broadcasting, recompute or compare `keccak256(init_code)` with the
 `Init code hash` printed by `vanity`. Foundry's proxy must receive those exact

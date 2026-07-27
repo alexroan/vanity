@@ -1,5 +1,6 @@
 use crate::create2::Address;
 use anyhow::{Context, Result, anyhow, bail};
+use ethabi::token::{LenientTokenizer, Tokenizer};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -188,58 +189,111 @@ impl fmt::Display for ContractArtifact {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ConstructorSpec {
-    input_types: Vec<String>,
+    inputs: Vec<ConstructorInput>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConstructorInput {
+    name: String,
+    input_type: String,
+}
+
+impl ConstructorInput {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn input_type(&self) -> &str {
+        &self.input_type
+    }
 }
 
 impl ConstructorSpec {
     pub fn requires_arguments(&self) -> bool {
-        !self.input_types.is_empty()
+        !self.inputs.is_empty()
+    }
+
+    pub fn inputs(&self) -> &[ConstructorInput] {
+        &self.inputs
     }
 
     pub fn signature(&self) -> String {
-        format!("constructor({})", self.input_types.join(","))
-    }
-
-    /// `cast abi-encode` accepts a function-shaped signature. Constructor
-    /// arguments use the same ABI tuple encoding, so this is convenient to
-    /// copy into a shell.
-    pub fn cast_signature(&self) -> String {
-        format!("args({})", self.input_types.join(","))
-    }
-
-    pub fn validate_arguments(&self, encoded: &[u8]) -> Result<()> {
-        let parameter_types = self
-            .input_types
+        let input_types = self
+            .inputs
             .iter()
-            .map(|input_type| {
-                // Solidity ABI encodes an external function pointer exactly
-                // like bytes24 (20-byte address + 4-byte selector).
-                let validation_type = input_type.replace("function", "bytes24");
-                let parsed = ethabi::param_type::Reader::read(&validation_type)
-                    .with_context(|| format!("unsupported constructor ABI type `{input_type}`"))?;
-                if ethabi::param_type::Writer::write(&parsed) != validation_type
-                    || !is_supported_abi_type(&parsed)
-                {
-                    bail!("unsupported constructor ABI type `{input_type}`");
-                }
-                Ok(parsed)
-            })
+            .map(ConstructorInput::input_type)
+            .collect::<Vec<_>>()
+            .join(",");
+        format!("constructor({input_types})")
+    }
+
+    /// Validates one user-entered constructor value before the prompt advances.
+    pub fn validate_input(&self, index: usize, value: &str) -> Result<()> {
+        self.parse_input(index, value).map(|_| ())
+    }
+
+    /// Parses and ABI-encodes constructor values in artifact order.
+    pub fn encode_arguments(&self, values: &[String]) -> Result<Vec<u8>> {
+        if values.len() != self.inputs.len() {
+            bail!(
+                "constructor expects {} argument(s), but {} value(s) were provided",
+                self.inputs.len(),
+                values.len()
+            );
+        }
+
+        let tokens = values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| self.parse_input(index, value))
             .collect::<Result<Vec<_>>>()?;
-        let tokens = ethabi::decode(&parameter_types, encoded)
-            .context("bytes are not valid for this constructor signature")?;
-        if !parameter_types
-            .iter()
-            .zip(&tokens)
-            .all(|(parameter_type, token)| token_fits_type(parameter_type, token))
-        {
-            bail!("constructor arguments contain a value outside its ABI type");
-        }
-        let canonical = ethabi::encode(&tokens);
-        if canonical != encoded {
-            bail!("constructor arguments are not canonically ABI encoded");
-        }
-        Ok(())
+        Ok(ethabi::encode(&tokens))
     }
+
+    fn parse_input(&self, index: usize, value: &str) -> Result<ethabi::Token> {
+        let input = self.inputs.get(index).ok_or_else(|| {
+            anyhow!(
+                "constructor argument {} does not exist (constructor has {})",
+                index + 1,
+                self.inputs.len()
+            )
+        })?;
+        let parameter_type = parse_constructor_type(&input.input_type)?;
+        let value = if matches!(parameter_type, ethabi::ParamType::String) {
+            value
+        } else {
+            value.trim()
+        };
+        let token = LenientTokenizer::tokenize(&parameter_type, value).map_err(|_| {
+            anyhow!(
+                "value is not valid for constructor argument {} (`{}`)",
+                index + 1,
+                input.input_type
+            )
+        })?;
+        if !token_fits_type(&parameter_type, &token) {
+            bail!(
+                "value is outside the range of constructor argument {} (`{}`)",
+                index + 1,
+                input.input_type
+            );
+        }
+        Ok(token)
+    }
+}
+
+fn parse_constructor_type(input_type: &str) -> Result<ethabi::ParamType> {
+    // Solidity ABI encodes an external function pointer exactly like bytes24
+    // (20-byte address + 4-byte selector).
+    let validation_type = input_type.replace("function", "bytes24");
+    let parameter_type = ethabi::param_type::Reader::read(&validation_type)
+        .with_context(|| format!("unsupported constructor ABI type `{input_type}`"))?;
+    if ethabi::param_type::Writer::write(&parameter_type) != validation_type
+        || !is_supported_abi_type(&parameter_type)
+    {
+        bail!("unsupported constructor ABI type `{input_type}`");
+    }
+    Ok(parameter_type)
 }
 
 fn is_supported_abi_type(parameter_type: &ethabi::ParamType) -> bool {
@@ -324,6 +378,8 @@ struct RawAbiItem {
 
 #[derive(Clone, Debug, Deserialize)]
 struct RawAbiInput {
+    #[serde(default)]
+    name: String,
     #[serde(rename = "type")]
     input_type: String,
     #[serde(default)]
@@ -450,7 +506,14 @@ pub fn discover_artifacts(out_dir: &Path) -> Result<Vec<ContractArtifact>> {
             .iter()
             .find(|item| item.item_type == "constructor")
             .map(|item| ConstructorSpec {
-                input_types: item.inputs.iter().map(canonical_abi_type).collect(),
+                inputs: item
+                    .inputs
+                    .iter()
+                    .map(|input| ConstructorInput {
+                        name: input.name.clone(),
+                        input_type: canonical_abi_type(input),
+                    })
+                    .collect(),
             })
             .unwrap_or_default();
 
@@ -627,6 +690,18 @@ mod tests {
         })
     }
 
+    fn constructor(inputs: &[(&str, &str)]) -> ConstructorSpec {
+        ConstructorSpec {
+            inputs: inputs
+                .iter()
+                .map(|(name, input_type)| ConstructorInput {
+                    name: (*name).to_owned(),
+                    input_type: (*input_type).to_owned(),
+                })
+                .collect(),
+        }
+    }
+
     #[test]
     fn discovers_deployable_artifacts_and_skips_other_json() {
         let temp = tempfile::tempdir().unwrap();
@@ -666,12 +741,13 @@ mod tests {
                 json!([{
                     "type": "constructor",
                     "inputs": [
-                        {"type": "address"},
+                        {"name": "owner", "type": "address"},
                         {
+                            "name": "entries",
                             "type": "tuple[]",
                             "components": [
-                                {"type": "uint256"},
-                                {"type": "bytes32"}
+                                {"name": "amount", "type": "uint256"},
+                                {"name": "salt", "type": "bytes32"}
                             ]
                         }
                     ]
@@ -685,66 +761,84 @@ mod tests {
             contracts[0].constructor().signature(),
             "constructor(address,(uint256,bytes32)[])"
         );
-        assert_eq!(
-            contracts[0].constructor().cast_signature(),
-            "args(address,(uint256,bytes32)[])"
-        );
+        let inputs = contracts[0].constructor().inputs();
+        assert_eq!(inputs[0].name(), "owner");
+        assert_eq!(inputs[0].input_type(), "address");
+        assert_eq!(inputs[1].name(), "entries");
+        assert_eq!(inputs[1].input_type(), "(uint256,bytes32)[]");
     }
 
     #[test]
-    fn constructor_arguments_must_match_the_artifact_abi() {
-        let static_constructor = ConstructorSpec {
-            input_types: vec!["uint256".to_owned()],
-        };
-        let valid_static = ethabi::encode(&[ethabi::Token::Uint(42_u64.into())]);
-        assert!(static_constructor.validate_arguments(&valid_static).is_ok());
-        assert!(static_constructor.validate_arguments(&[0x00]).is_err());
+    fn constructor_values_are_validated_and_abi_encoded() {
+        let spec = constructor(&[
+            ("owner", "address"),
+            ("amount", "uint256"),
+            ("enabled", "bool"),
+            ("note", "string"),
+            ("payload", "bytes"),
+        ]);
+        let values = vec![
+            "0x1111111111111111111111111111111111111111".to_owned(),
+            "42".to_owned(),
+            "true".to_owned(),
+            "vanity".to_owned(),
+            "0x1234".to_owned(),
+        ];
+        let encoded = spec.encode_arguments(&values).unwrap();
+        let expected = ethabi::encode(&[
+            ethabi::Token::Address([0x11; 20].into()),
+            ethabi::Token::Uint(42_u64.into()),
+            ethabi::Token::Bool(true),
+            ethabi::Token::String("vanity".to_owned()),
+            ethabi::Token::Bytes(vec![0x12, 0x34]),
+        ]);
+        assert_eq!(encoded, expected);
 
-        let dynamic_constructor = ConstructorSpec {
-            input_types: vec!["string".to_owned()],
-        };
-        let valid_dynamic = ethabi::encode(&[ethabi::Token::String("vanity".to_owned())]);
         assert!(
-            dynamic_constructor
-                .validate_arguments(&valid_dynamic)
-                .is_ok()
+            spec.validate_input(0, "0x1111").is_err(),
+            "addresses must contain exactly 20 bytes"
         );
+        assert!(spec.validate_input(1, "-1").is_err());
+        assert!(spec.validate_input(2, "yes").is_err());
+        assert!(spec.validate_input(4, "0x123").is_err());
+        assert!(spec.encode_arguments(&values[..4]).is_err());
+        assert!(spec.validate_input(5, "anything").is_err());
+    }
 
-        let mut trailing_garbage = valid_dynamic;
-        trailing_garbage.extend_from_slice(&[0; 32]);
-        assert!(
-            dynamic_constructor
-                .validate_arguments(&trailing_garbage)
-                .is_err()
-        );
+    #[test]
+    fn constructor_values_enforce_integer_widths_and_composite_shapes() {
+        let spec = constructor(&[
+            ("small", "uint8"),
+            ("signed", "int8"),
+            ("pair", "(uint16,bool)"),
+            ("items", "bytes2[2]"),
+        ]);
 
-        let narrow_unsigned = ConstructorSpec {
-            input_types: vec!["uint8".to_owned()],
-        };
-        let out_of_range = ethabi::encode(&[ethabi::Token::Uint(ethabi::Uint::from(256))]);
-        assert!(narrow_unsigned.validate_arguments(&out_of_range).is_err());
+        assert!(spec.validate_input(0, "255").is_ok());
+        assert!(spec.validate_input(0, "256").is_err());
+        assert!(spec.validate_input(1, "-128").is_ok());
+        assert!(spec.validate_input(1, "127").is_ok());
+        assert!(spec.validate_input(1, "-129").is_err());
+        assert!(spec.validate_input(1, "128").is_err());
+        assert!(spec.validate_input(2, "(42,true)").is_ok());
+        assert!(spec.validate_input(2, "(65536,true)").is_err());
+        assert!(spec.validate_input(2, "[42,true]").is_err());
+        assert!(spec.validate_input(3, "[0x1234,0xabcd]").is_ok());
+        assert!(spec.validate_input(3, "[0x1234]").is_err());
 
-        let narrow_signed = ConstructorSpec {
-            input_types: vec!["int8".to_owned()],
-        };
-        let negative_one = ethabi::encode(&[ethabi::Token::Int(ethabi::Uint::max_value())]);
-        assert!(narrow_signed.validate_arguments(&negative_one).is_ok());
-        let invalid_positive = ethabi::encode(&[ethabi::Token::Int(ethabi::Uint::from(128))]);
-        assert!(narrow_signed.validate_arguments(&invalid_positive).is_err());
-
-        let invalid_type = ConstructorSpec {
-            input_types: vec!["uint7".to_owned()],
-        };
-        assert!(invalid_type.validate_arguments(&[0; 32]).is_err());
+        let invalid_type = constructor(&[("bad", "uint7")]);
+        assert!(invalid_type.validate_input(0, "1").is_err());
     }
 
     #[test]
     fn constructor_function_pointer_uses_bytes24_abi_encoding() {
-        let constructor = ConstructorSpec {
-            input_types: vec!["function".to_owned()],
-        };
-        let encoded = ethabi::encode(&[ethabi::Token::FixedBytes(vec![0x11; 24])]);
-        assert!(constructor.validate_arguments(&encoded).is_ok());
+        let constructor = constructor(&[("callback", "function")]);
+        let value = format!("0x{}", "11".repeat(24));
+        let encoded = constructor.encode_arguments(&[value]).unwrap();
+        assert_eq!(
+            encoded,
+            ethabi::encode(&[ethabi::Token::FixedBytes(vec![0x11; 24])])
+        );
     }
 
     #[test]

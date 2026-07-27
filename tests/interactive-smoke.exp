@@ -70,7 +70,7 @@ expect {
     -re {CREATE2 deployer address} {
         fail "vanity showed the removed CREATE2 deployer prompt" 128
     }
-    -re {This contract requires constructor\(uint256\)} {}
+    -re {This contract requires constructor\(uint256,address\)} {}
     timeout {
         fail "timed out waiting for the constructor signature" 124
     }
@@ -78,8 +78,16 @@ expect {
         fail "vanity exited before showing the constructor signature" 125
     }
 }
-expect_re {Paste ABI-encoded constructor arguments} "the constructor arguments field"
-send -- "0x000000000000000000000000000000000000000000000000000000000000002a\r"
+expect_re {Constructor arguments:} "the constructor arguments heading"
+expect_re {1\. answer_: uint256} "the constructor argument list"
+expect_re {2\. owner_: address} "the second constructor argument"
+expect_re {Constructor argument 1/2 - answer_: uint256} "the first typed constructor argument field"
+send -- "not-a-number\r"
+expect_re {value is not valid for constructor argument 1} "the constructor type validation error"
+expect_re {Constructor argument 1/2 - answer_: uint256} "the repeated invalid constructor argument field"
+send -- "42\r"
+expect_re {Constructor argument 2/2 - owner_: address} "the second typed constructor argument field"
+send -- "0x2222222222222222222222222222222222222222\r"
 
 expect_re {Choose an address prefix} "the prefix selector"
 expect_re {dead . example} "a prefix example"
