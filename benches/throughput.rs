@@ -1,7 +1,7 @@
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
-use vanity_create2::backend::BackendPreference;
-use vanity_create2::create2::{Address, Create2Miner, MiningOptions, SearchOutcome, VanityPattern};
+use vanity::backend::BackendPreference;
+use vanity::create2::{Address, Create2Miner, MiningOptions, SearchOutcome, VanityPattern};
 
 const SEARCH_LEN: u64 = 1 << 22;
 const OUTSIDE_TARGET: &str = "18162225c723faacff3b021232a717bdbf62605d";
@@ -68,7 +68,7 @@ fn main() {
 
 fn timed_search(
     miner: &Create2Miner,
-    session: &mut vanity_create2::BackendSession,
+    session: &mut vanity::BackendSession,
     options: MiningOptions,
     cancelled: &AtomicBool,
 ) -> Duration {

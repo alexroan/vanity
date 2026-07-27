@@ -1,4 +1,4 @@
-# vanity-create2
+# vanity
 
 `vanity` is an interactive, GPU-accelerated CREATE2 vanity-address miner for
 Foundry projects. It builds the project, lets you choose a deployable contract
@@ -39,7 +39,7 @@ For local development, invoke the checkout without installing it:
 ```sh
 cd /path/to/foundry-project
 cargo run --release \
-  --manifest-path /path/to/vanity-create2/Cargo.toml \
+  --manifest-path /path/to/vanity/Cargo.toml \
   --bin vanity -- --backend auto
 ```
 
