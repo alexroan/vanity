@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.87"
 description = "Interactive CREATE2 vanity address miner for Foundry projects"
-license = "MIT OR Apache-2.0"
+license = "MIT"
 
 [[bin]]
 name = "vanity"

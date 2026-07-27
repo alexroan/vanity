@@ -302,4 +302,4 @@ counters, cancellation and range limits, GPU offset and digest-witness
 validation, Foundry artifact discovery, constructor type handling, and library
 linking.
 
-Licensed under either MIT or Apache-2.0.
+Licensed under the [MIT License](LICENSE).
